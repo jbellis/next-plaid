@@ -121,7 +121,7 @@ pub fn extract_class(
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
     unit.docstring = extract_docstring(node, lines, lang);
-    unit.extends = extract_parent_class(node, bytes, lang);
+    unit.extends = extract_parent_class(node, bytes, lang, super::max_recursion_depth());
 
     // Layer 1: Type parameters (generics like <T, U>)
     unit.parameters = extract_class_type_parameters(node, bytes, lang);
