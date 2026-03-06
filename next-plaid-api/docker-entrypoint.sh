@@ -67,11 +67,17 @@ download_hf_file() {
 }
 
 # Download model from HuggingFace Hub
+# Downloads to a temp directory first and moves to final path only after all
+# files are successfully downloaded. This prevents partial downloads from being
+# treated as valid on subsequent runs.
 download_model() {
     local model_path="$1" repo_id="$2" token="${3:-}" use_int8="${4:-false}"
 
     log_info "Downloading model from HuggingFace: ${repo_id}"
-    mkdir -p "$model_path"
+
+    local tmp_path="${model_path}.tmp.$$"
+    rm -rf "$tmp_path"
+    mkdir -p "$tmp_path"
 
     local files=("tokenizer.json" "config_sentence_transformers.json" "onnx_config.json")
     if [ "$use_int8" = "true" ]; then
@@ -84,18 +90,29 @@ download_model() {
 
     local failed=0
     for file in "${files[@]}"; do
-        download_hf_file "$repo_id" "$file" "$model_path" "$token" || failed=1
+        download_hf_file "$repo_id" "$file" "$tmp_path" "$token" || failed=1
     done
 
-    [ $failed -eq 1 ] && { log_error "Some files failed to download"; return 1; }
+    if [ $failed -eq 1 ]; then
+        log_error "Some files failed to download, cleaning up"
+        rm -rf "$tmp_path"
+        return 1
+    fi
+
+    # All downloads succeeded — move to final location atomically
+    rm -rf "$model_path"
+    mv "$tmp_path" "$model_path"
+    # Write marker so we can distinguish complete downloads from partial ones
+    touch "${model_path}/.download_complete"
     log_info "Model download complete"
 }
 
-# Check if model directory has required files
+# Check if model directory has all required files from a completed download
 model_exists() {
     local model_path="$1" use_int8="${2:-false}"
 
     [ ! -d "$model_path" ] && return 1
+    [ ! -f "${model_path}/.download_complete" ] && return 1
     [ ! -f "${model_path}/tokenizer.json" ] && return 1
 
     if [ "$use_int8" = "true" ]; then
