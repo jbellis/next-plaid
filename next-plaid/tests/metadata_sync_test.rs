@@ -203,10 +203,14 @@ fn test_metadata_sync_update_or_create_existing() {
 
     // Create initial index
     let emb1 = random_embeddings(5, 8, 64);
-    let (_index, doc_ids1) =
+    let (initial_index, doc_ids1) =
         MmapIndex::update_or_create(&emb1, path, &index_config, &update_config).unwrap();
     assert_eq!(read_num_documents_from_file(path).unwrap(), 5);
     assert_eq!(doc_ids1, vec![0, 1, 2, 3, 4]);
+
+    // Drop previous index to release mmap handles before updating.
+    // On Windows, files cannot be modified while memory-mapped.
+    drop(initial_index);
 
     // Update existing index
     let emb2 = random_embeddings(5, 8, 64);

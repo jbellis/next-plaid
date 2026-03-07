@@ -15,7 +15,7 @@ use std::path::Path;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use fs2::FileExt;
-use memmap2::Mmap;
+use memmap2::{Mmap, MmapMut};
 use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
 
 use crate::error::{Error, Result};
@@ -741,6 +741,22 @@ pub struct MmapNpyArray1I64 {
 }
 
 impl MmapNpyArray1I64 {
+    /// Create an empty instance backed by an anonymous mmap (no file).
+    ///
+    /// Used to release file-backed mmap handles before file operations on Windows,
+    /// where deleting or renaming a memory-mapped file causes OS error 1224.
+    pub fn empty() -> Self {
+        let mmap = MmapMut::map_anon(1)
+            .expect("failed to create anonymous mmap")
+            .make_read_only()
+            .expect("failed to make anonymous mmap read-only");
+        Self {
+            _mmap: mmap,
+            len: 0,
+            data_offset: 0,
+        }
+    }
+
     /// Load a 1D i64 array from an NPY file.
     pub fn from_npy_file(path: &Path) -> Result<Self> {
         let file = File::open(path)
@@ -939,6 +955,22 @@ pub struct MmapNpyArray2U8 {
 }
 
 impl MmapNpyArray2U8 {
+    /// Create an empty instance backed by an anonymous mmap (no file).
+    ///
+    /// Used to release file-backed mmap handles before file operations on Windows,
+    /// where deleting or renaming a memory-mapped file causes OS error 1224.
+    pub fn empty() -> Self {
+        let mmap = MmapMut::map_anon(1)
+            .expect("failed to create anonymous mmap")
+            .make_read_only()
+            .expect("failed to make anonymous mmap read-only");
+        Self {
+            _mmap: mmap,
+            shape: (0, 0),
+            data_offset: 0,
+        }
+    }
+
     /// Load a 2D u8 array from an NPY file.
     pub fn from_npy_file(path: &Path) -> Result<Self> {
         let file = File::open(path)

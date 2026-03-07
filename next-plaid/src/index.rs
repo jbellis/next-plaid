@@ -882,6 +882,21 @@ impl MmapIndex {
         self.codec.embedding_dim()
     }
 
+    /// Release all memory-mapped file handles.
+    ///
+    /// On Windows, files that are memory-mapped cannot be deleted, renamed, or
+    /// truncated (OS error 1224 / ERROR_USER_MAPPED_FILE). This method replaces
+    /// file-backed mmaps with anonymous (non-file) mmaps so that subsequent
+    /// file operations on the index directory can proceed.
+    ///
+    /// After calling this, the index is not usable for search — it must be
+    /// reloaded via `Self::load()`.
+    fn release_mmaps(&mut self) {
+        self.mmap_codes = crate::mmap::MmapNpyArray1I64::empty();
+        self.mmap_residuals = crate::mmap::MmapNpyArray2U8::empty();
+        self.codec.centroids = crate::codec::CentroidStore::Owned(Array2::zeros((0, 0)));
+    }
+
     /// Reconstruct embeddings for specific documents.
     ///
     /// This method retrieves the compressed codes and residuals for each document
@@ -999,6 +1014,12 @@ impl MmapIndex {
         let path_str = self.path.clone();
         let index_path = std::path::Path::new(&path_str);
         let num_new_docs = embeddings.len();
+
+        // Release mmap handles before any file operations (delete, rename,
+        // truncate). On Windows, files that are memory-mapped cannot be
+        // modified, causing OS error 1224 (ERROR_USER_MAPPED_FILE).
+        // The index will be fully reloaded from disk at the end of this method.
+        self.release_mmaps();
 
         // ==================================================================
         // Start-from-scratch mode (fast-plaid update.py:312-346)
@@ -1218,7 +1239,11 @@ impl MmapIndex {
     /// This should be called after delete operations to refresh the in-memory
     /// representation with the updated on-disk state.
     pub fn reload(&mut self) -> Result<()> {
-        *self = Self::load(&self.path)?;
+        let path = self.path.clone();
+        // Release mmap handles before reloading so that merge_*_chunks can
+        // rename/overwrite the merged files on Windows (OS error 1224).
+        self.release_mmaps();
+        *self = Self::load(&path)?;
         Ok(())
     }
 
@@ -1253,6 +1278,11 @@ impl MmapIndex {
     /// The number of documents actually deleted
     pub fn delete_with_options(&mut self, doc_ids: &[i64], delete_metadata: bool) -> Result<usize> {
         let path = self.path.clone();
+
+        // Release mmap handles before deletion. delete_from_index calls
+        // clear_merged_files which removes the memory-mapped merged files.
+        // On Windows this fails with OS error 1224 if the mmaps are active.
+        self.release_mmaps();
 
         // Perform the deletion using standalone function
         let deleted = crate::delete::delete_from_index(doc_ids, &path)?;
@@ -1377,6 +1407,10 @@ mod tests {
                 .expect("Failed to create index");
         assert_eq!(index1.metadata.num_documents, 5);
         assert_eq!(doc_ids1, vec![0, 1, 2, 3, 4]);
+
+        // Drop previous index to release mmap handles before updating.
+        // On Windows, files cannot be modified while memory-mapped.
+        drop(index1);
 
         // Second call - updates existing index with 3 more documents
         let embeddings2 = create_embeddings(3, 5);
