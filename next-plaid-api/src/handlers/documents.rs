@@ -519,14 +519,29 @@ async fn process_batch(
 
 // ---------------------------
 
-/// Convert document embeddings from JSON format to ndarray.
+/// Convert document embeddings from JSON or base64 format to ndarray.
 fn to_ndarray(doc: &DocumentEmbeddings) -> ApiResult<Array2<f32>> {
-    let rows = doc.embeddings.len();
+    // Prefer base64 if provided (more efficient)
+    if let (Some(b64), Some(shape)) = (&doc.embeddings_b64, &doc.shape) {
+        let floats =
+            crate::models::decode_b64_embeddings(b64, *shape).map_err(ApiError::BadRequest)?;
+        return Array2::from_shape_vec((shape[0], shape[1]), floats)
+            .map_err(|e| ApiError::BadRequest(format!("Failed to create array: {}", e)));
+    }
+
+    // Fall back to JSON array format
+    let embeddings = doc.embeddings.as_ref().ok_or_else(|| {
+        ApiError::BadRequest(
+            "Must provide either 'embeddings' or 'embeddings_b64' + 'shape'".to_string(),
+        )
+    })?;
+
+    let rows = embeddings.len();
     if rows == 0 {
         return Err(ApiError::BadRequest("Empty embeddings".to_string()));
     }
 
-    let cols = doc.embeddings[0].len();
+    let cols = embeddings[0].len();
     if cols == 0 {
         return Err(ApiError::BadRequest(
             "Zero dimension embeddings".to_string(),
@@ -534,7 +549,7 @@ fn to_ndarray(doc: &DocumentEmbeddings) -> ApiResult<Array2<f32>> {
     }
 
     // Verify all rows have the same dimension
-    for (i, row) in doc.embeddings.iter().enumerate() {
+    for (i, row) in embeddings.iter().enumerate() {
         if row.len() != cols {
             return Err(ApiError::BadRequest(format!(
                 "Inconsistent embedding dimension at row {}: expected {}, got {}",
@@ -545,7 +560,7 @@ fn to_ndarray(doc: &DocumentEmbeddings) -> ApiResult<Array2<f32>> {
         }
     }
 
-    let flat: Vec<f32> = doc.embeddings.iter().flatten().copied().collect();
+    let flat: Vec<f32> = embeddings.iter().flatten().copied().collect();
     Array2::from_shape_vec((rows, cols), flat)
         .map_err(|e| ApiError::BadRequest(format!("Failed to create array: {}", e)))
 }
@@ -1069,10 +1084,19 @@ pub async fn add_documents(
 
     // Check first document's dimension before converting all (fail fast on dimension mismatch)
     if let Some(first_doc) = req.documents.first() {
-        if first_doc.embeddings.is_empty() {
-            return Err(ApiError::BadRequest("Empty embeddings".to_string()));
-        }
-        let first_dim = first_doc.embeddings[0].len();
+        let first_dim = if let Some(shape) = &first_doc.shape {
+            // Base64 format: check shape
+            shape[1]
+        } else if let Some(embeddings) = &first_doc.embeddings {
+            if embeddings.is_empty() {
+                return Err(ApiError::BadRequest("Empty embeddings".to_string()));
+            }
+            embeddings[0].len()
+        } else {
+            return Err(ApiError::BadRequest(
+                "Must provide either 'embeddings' or 'embeddings_b64' + 'shape'".to_string(),
+            ));
+        };
         if first_dim != expected_dim {
             return Err(ApiError::DimensionMismatch {
                 expected: expected_dim,

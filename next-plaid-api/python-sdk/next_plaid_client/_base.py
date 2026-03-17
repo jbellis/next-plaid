@@ -2,7 +2,9 @@
 Base client with shared logic for sync and async implementations.
 """
 
+import base64
 import json
+import struct
 from typing import Optional, List, Dict, Any, Union
 from urllib.parse import urljoin
 
@@ -24,6 +26,21 @@ def _is_text_input(items: List[Any]) -> bool:
         return False
     first = items[0]
     return isinstance(first, str)
+
+
+def _encode_embeddings_b64(embeddings: List[List[float]]) -> tuple:
+    """Encode embeddings as base64 little-endian f32.
+
+    Returns:
+        Tuple of (base64_string, [num_tokens, dim])
+    """
+    rows = len(embeddings)
+    cols = len(embeddings[0]) if rows > 0 else 0
+    flat = []
+    for row in embeddings:
+        flat.extend(row)
+    data = struct.pack(f"<{len(flat)}f", *flat)
+    return base64.b64encode(data).decode("ascii"), [rows, cols]
 
 
 def _is_embedding_input(items: List[Any]) -> bool:
@@ -155,8 +172,15 @@ class BaseNextPlaidClient:
         documents: List[Union[Document, Dict[str, List[List[float]]]]],
         metadata: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
-        """Prepare payload for document operations."""
-        docs = [d.to_dict() if isinstance(d, Document) else d for d in documents]
+        """Prepare payload for document operations, using base64 encoding for efficiency."""
+        docs = []
+        for d in documents:
+            emb = d.embeddings if isinstance(d, Document) else d.get("embeddings", d)
+            if isinstance(emb, list) and emb and isinstance(emb[0], list):
+                b64, shape = _encode_embeddings_b64(emb)
+                docs.append({"embeddings_b64": b64, "shape": shape})
+            else:
+                docs.append(d.to_dict() if isinstance(d, Document) else d)
         payload: Dict[str, Any] = {"documents": docs}
         if metadata:
             payload["metadata"] = metadata
@@ -168,11 +192,21 @@ class BaseNextPlaidClient:
         params: Optional[SearchParams] = None,
         subset: Optional[List[int]] = None,
     ) -> Dict[str, Any]:
-        """Prepare payload for search operations."""
+        """Prepare payload for search operations, using base64 encoding for efficiency."""
         query_dicts = []
         for q in queries:
             if isinstance(q, dict) and "embeddings" in q:
-                query_dicts.append(q)
+                # Already a dict with embeddings key - encode as base64
+                emb = q["embeddings"]
+                if isinstance(emb, list) and emb and isinstance(emb[0], list):
+                    b64, shape = _encode_embeddings_b64(emb)
+                    query_dicts.append({"embeddings_b64": b64, "shape": shape})
+                else:
+                    query_dicts.append(q)
+            elif isinstance(q, list) and q and isinstance(q[0], list):
+                # Raw nested list of embeddings
+                b64, shape = _encode_embeddings_b64(q)
+                query_dicts.append({"embeddings_b64": b64, "shape": shape})
             else:
                 query_dicts.append({"embeddings": q})
 
@@ -190,11 +224,19 @@ class BaseNextPlaidClient:
         filter_parameters: Optional[List[Any]] = None,
         params: Optional[SearchParams] = None,
     ) -> Dict[str, Any]:
-        """Prepare payload for filtered search operations."""
+        """Prepare payload for filtered search operations, using base64 encoding."""
         query_dicts = []
         for q in queries:
             if isinstance(q, dict) and "embeddings" in q:
-                query_dicts.append(q)
+                emb = q["embeddings"]
+                if isinstance(emb, list) and emb and isinstance(emb[0], list):
+                    b64, shape = _encode_embeddings_b64(emb)
+                    query_dicts.append({"embeddings_b64": b64, "shape": shape})
+                else:
+                    query_dicts.append(q)
+            elif isinstance(q, list) and q and isinstance(q[0], list):
+                b64, shape = _encode_embeddings_b64(q)
+                query_dicts.append({"embeddings_b64": b64, "shape": shape})
             else:
                 query_dicts.append({"embeddings": q})
 

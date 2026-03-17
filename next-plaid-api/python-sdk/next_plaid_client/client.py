@@ -5,7 +5,7 @@ Synchronous client for the Next Plaid API.
 import httpx
 from typing import Optional, List, Dict, Any, Union
 
-from ._base import BaseNextPlaidClient, _is_text_input
+from ._base import BaseNextPlaidClient, _is_text_input, _encode_embeddings_b64
 from .exceptions import ConnectionError as NextPlaidConnectionError
 from .models import (
     IndexConfig,
@@ -67,6 +67,7 @@ class NextPlaidClient(BaseNextPlaidClient):
         endpoint: str,
         json: Optional[Dict[str, Any]] = None,
         params: Optional[Dict[str, Any]] = None,
+        headers: Optional[Dict[str, str]] = None,
     ) -> Any:
         """Make a synchronous HTTP request to the API."""
         url = self._build_url(endpoint)
@@ -77,6 +78,7 @@ class NextPlaidClient(BaseNextPlaidClient):
                 url=url,
                 json=json,
                 params=params,
+                headers=headers,
             )
         except httpx.ConnectError as e:
             raise NextPlaidConnectionError(
@@ -581,7 +583,12 @@ class NextPlaidClient(BaseNextPlaidClient):
         payload: Dict[str, Any] = {"texts": texts, "input_type": input_type}
         if pool_factor is not None:
             payload["pool_factor"] = pool_factor
-        data = self._request("POST", "/encode", json=payload)
+        data = self._request(
+            "POST",
+            "/encode",
+            json=payload,
+            headers={"X-Embeddings-Format": "base64"},
+        )
         return EncodeResponse.from_dict(data)
 
     # ==================== Reranking ====================
@@ -645,8 +652,21 @@ class NextPlaidClient(BaseNextPlaidClient):
                 payload["pool_factor"] = pool_factor
             data = self._request("POST", "/rerank_with_encoding", json=payload)
         else:
-            # Embeddings input - use regular rerank endpoint
-            payload = {"query": query, "documents": documents}
+            # Embeddings input - encode as base64 for efficiency
+            q_b64, q_shape = _encode_embeddings_b64(query)
+            doc_list = []
+            for d in documents:
+                emb = d.get("embeddings", d) if isinstance(d, dict) else d
+                if isinstance(emb, list) and emb and isinstance(emb[0], list):
+                    d_b64, d_shape = _encode_embeddings_b64(emb)
+                    doc_list.append({"embeddings_b64": d_b64, "shape": d_shape})
+                else:
+                    doc_list.append(d)
+            payload = {
+                "query_b64": q_b64,
+                "query_shape": q_shape,
+                "documents": doc_list,
+            }
             data = self._request("POST", "/rerank", json=payload)
 
         return RerankResponse.from_dict(data)

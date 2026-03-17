@@ -2,6 +2,8 @@
 Data models for the NextPlaid SDK.
 """
 
+import base64
+import struct
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -229,6 +231,19 @@ class EncodeResponse:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "EncodeResponse":
+        if data.get("embeddings_b64"):
+            # Decode base64 embeddings
+            embeddings = []
+            for b64_str, shape in zip(data["embeddings_b64"], data["shapes"]):
+                raw = base64.b64decode(b64_str)
+                num_floats = shape[0] * shape[1]
+                floats = list(struct.unpack(f"<{num_floats}f", raw))
+                rows = [
+                    floats[i * shape[1] : (i + 1) * shape[1]]
+                    for i in range(shape[0])
+                ]
+                embeddings.append(rows)
+            return cls(embeddings=embeddings, num_texts=data["num_texts"])
         return cls(
             embeddings=data["embeddings"],
             num_texts=data["num_texts"],

@@ -43,6 +43,25 @@ fn to_ndarray(embeddings: &[Vec<f32>]) -> ApiResult<Array2<f32>> {
         .map_err(|e| ApiError::Internal(format!("Failed to create ndarray: {}", e)))
 }
 
+/// Convert DocumentEmbeddings (JSON or base64) to an ndarray::Array2<f32>.
+fn doc_to_ndarray(doc: &crate::models::DocumentEmbeddings) -> ApiResult<Array2<f32>> {
+    // Prefer base64 if provided
+    if let (Some(b64), Some(shape)) = (&doc.embeddings_b64, &doc.shape) {
+        let floats =
+            crate::models::decode_b64_embeddings(b64, *shape).map_err(ApiError::BadRequest)?;
+        return Array2::from_shape_vec((shape[0], shape[1]), floats)
+            .map_err(|e| ApiError::Internal(format!("Failed to create ndarray: {}", e)));
+    }
+
+    // Fall back to JSON
+    let embeddings = doc.embeddings.as_ref().ok_or_else(|| {
+        ApiError::BadRequest(
+            "Must provide either 'embeddings' or 'embeddings_b64' + 'shape'".to_string(),
+        )
+    })?;
+    to_ndarray(embeddings)
+}
+
 /// Compute ColBERT MaxSim score between a query and a document.
 ///
 /// For each query token, find the maximum cosine similarity with any document token,
@@ -101,15 +120,26 @@ pub async fn rerank(
     let start = std::time::Instant::now();
 
     // Validate request
-    if request.query.is_empty() {
-        return Err(ApiError::BadRequest("Empty query embeddings".to_string()));
-    }
     if request.documents.is_empty() {
         return Err(ApiError::BadRequest("No documents provided".to_string()));
     }
 
-    // Convert query to ndarray
-    let query = to_ndarray(&request.query)?;
+    // Convert query to ndarray (base64 or JSON)
+    let query = if let (Some(b64), Some(shape)) = (&request.query_b64, &request.query_shape) {
+        let floats =
+            crate::models::decode_b64_embeddings(b64, *shape).map_err(ApiError::BadRequest)?;
+        Array2::from_shape_vec((shape[0], shape[1]), floats)
+            .map_err(|e| ApiError::BadRequest(format!("Failed to create query array: {}", e)))?
+    } else if let Some(ref q) = request.query {
+        if q.is_empty() {
+            return Err(ApiError::BadRequest("Empty query embeddings".to_string()));
+        }
+        to_ndarray(q)?
+    } else {
+        return Err(ApiError::BadRequest(
+            "Must provide either 'query' or 'query_b64' + 'query_shape'".to_string(),
+        ));
+    };
     let query_dim = query.ncols();
     let query_tokens = query.nrows();
 
@@ -118,7 +148,7 @@ pub async fn rerank(
         .documents
         .iter()
         .map(|doc| {
-            let arr = to_ndarray(&doc.embeddings)?;
+            let arr = doc_to_ndarray(doc)?;
             if arr.ncols() != query_dim {
                 return Err(ApiError::DimensionMismatch {
                     expected: query_dim,

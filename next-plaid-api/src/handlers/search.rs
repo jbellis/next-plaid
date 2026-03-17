@@ -23,14 +23,29 @@ use crate::state::AppState;
 use crate::tracing_middleware::TraceId;
 use crate::PrettyJson;
 
-/// Convert query embeddings from JSON format to ndarray.
+/// Convert query embeddings from JSON or base64 format to ndarray.
 fn to_ndarray(query: &QueryEmbeddings) -> ApiResult<Array2<f32>> {
-    let rows = query.embeddings.len();
+    // Prefer base64 if provided (more efficient)
+    if let (Some(b64), Some(shape)) = (&query.embeddings_b64, &query.shape) {
+        let floats =
+            crate::models::decode_b64_embeddings(b64, *shape).map_err(ApiError::BadRequest)?;
+        return Array2::from_shape_vec((shape[0], shape[1]), floats)
+            .map_err(|e| ApiError::BadRequest(format!("Failed to create query array: {}", e)));
+    }
+
+    // Fall back to JSON array format
+    let embeddings = query.embeddings.as_ref().ok_or_else(|| {
+        ApiError::BadRequest(
+            "Must provide either 'embeddings' or 'embeddings_b64' + 'shape'".to_string(),
+        )
+    })?;
+
+    let rows = embeddings.len();
     if rows == 0 {
         return Err(ApiError::BadRequest("Empty query embeddings".to_string()));
     }
 
-    let cols = query.embeddings[0].len();
+    let cols = embeddings[0].len();
     if cols == 0 {
         return Err(ApiError::BadRequest(
             "Zero dimension query embeddings".to_string(),
@@ -38,7 +53,7 @@ fn to_ndarray(query: &QueryEmbeddings) -> ApiResult<Array2<f32>> {
     }
 
     // Verify all rows have the same dimension
-    for (i, row) in query.embeddings.iter().enumerate() {
+    for (i, row) in embeddings.iter().enumerate() {
         if row.len() != cols {
             return Err(ApiError::BadRequest(format!(
                 "Inconsistent query embedding dimension at row {}: expected {}, got {}",
@@ -49,7 +64,7 @@ fn to_ndarray(query: &QueryEmbeddings) -> ApiResult<Array2<f32>> {
         }
     }
 
-    let flat: Vec<f32> = query.embeddings.iter().flatten().copied().collect();
+    let flat: Vec<f32> = embeddings.iter().flatten().copied().collect();
     Array2::from_shape_vec((rows, cols), flat)
         .map_err(|e| ApiError::BadRequest(format!("Failed to create query array: {}", e)))
 }
@@ -341,7 +356,9 @@ pub async fn search_with_encoding(
     let queries: Vec<QueryEmbeddings> = query_embeddings
         .into_iter()
         .map(|arr| QueryEmbeddings {
-            embeddings: arr.rows().into_iter().map(|r| r.to_vec()).collect(),
+            embeddings: Some(arr.rows().into_iter().map(|r| r.to_vec()).collect()),
+            embeddings_b64: None,
+            shape: None,
         })
         .collect();
 
@@ -412,7 +429,9 @@ pub async fn search_filtered_with_encoding(
     let queries: Vec<QueryEmbeddings> = query_embeddings
         .into_iter()
         .map(|arr| QueryEmbeddings {
-            embeddings: arr.rows().into_iter().map(|r| r.to_vec()).collect(),
+            embeddings: Some(arr.rows().into_iter().map(|r| r.to_vec()).collect()),
+            embeddings_b64: None,
+            shape: None,
         })
         .collect();
 

@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 #[cfg(feature = "model")]
 use std::time::Duration;
 
-use axum::{extract::State, Json};
+use axum::{extract::State, http::HeaderMap, Json};
 #[cfg(feature = "model")]
 use tokio::sync::{mpsc, oneshot};
 #[cfg(feature = "model")]
@@ -431,12 +431,20 @@ fn encode_texts_with_model(
 )]
 pub async fn encode(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(request): Json<EncodeRequest>,
 ) -> ApiResult<Json<EncodeResponse>> {
     // Validate request
     if request.texts.is_empty() {
         return Err(ApiError::BadRequest("No texts provided".to_string()));
     }
+
+    // Check if client wants base64 format
+    let want_b64 = headers
+        .get("X-Embeddings-Format")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.eq_ignore_ascii_case("base64"))
+        .unwrap_or(false);
 
     // Use the single internal encoding function
     let embeddings_arr = encode_texts_internal(
@@ -447,17 +455,36 @@ pub async fn encode(
     )
     .await?;
 
-    // Convert Array2<f32> to Vec<Vec<Vec<f32>>> for JSON response
+    // Convert Array2<f32> to Vec<Vec<Vec<f32>>>
     let embeddings: Vec<Vec<Vec<f32>>> = embeddings_arr
         .into_iter()
         .map(|arr| arr.rows().into_iter().map(|row| row.to_vec()).collect())
         .collect();
     let num_texts = embeddings.len();
 
-    Ok(Json(EncodeResponse {
-        embeddings,
-        num_texts,
-    }))
+    if want_b64 {
+        // Return base64-encoded embeddings
+        let mut b64_list = Vec::with_capacity(num_texts);
+        let mut shapes = Vec::with_capacity(num_texts);
+        for emb in &embeddings {
+            let (b64, shape) = crate::models::encode_b64_embeddings(emb);
+            b64_list.push(b64);
+            shapes.push(shape);
+        }
+        Ok(Json(EncodeResponse {
+            embeddings: None,
+            embeddings_b64: Some(b64_list),
+            shapes: Some(shapes),
+            num_texts,
+        }))
+    } else {
+        Ok(Json(EncodeResponse {
+            embeddings: Some(embeddings),
+            embeddings_b64: None,
+            shapes: None,
+            num_texts,
+        }))
+    }
 }
 
 /// Stub encode function when model feature is not enabled.
@@ -473,6 +500,7 @@ pub async fn encode(
 )]
 pub async fn encode(
     State(_state): State<Arc<AppState>>,
+    _headers: HeaderMap,
     Json(_request): Json<EncodeRequest>,
 ) -> ApiResult<Json<EncodeResponse>> {
     Err(ApiError::ModelNotLoaded)

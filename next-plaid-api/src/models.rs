@@ -2,6 +2,7 @@
 //!
 //! This module defines the JSON structures used for API communication.
 
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -128,11 +129,21 @@ pub struct IndexInfoResponse {
 // =============================================================================
 
 /// Document embeddings with optional metadata.
+///
+/// Supports two formats:
+/// - JSON: provide `embeddings` as a nested array
+/// - Base64: provide `embeddings_b64` (base64-encoded little-endian f32) and `shape`
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct DocumentEmbeddings {
-    /// Embedding matrix as nested array [num_tokens, dim]
-    #[schema(example = json!([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]))]
-    pub embeddings: Vec<Vec<f32>>,
+    /// Embedding matrix as nested array [num_tokens, dim] (JSON format)
+    #[serde(default)]
+    pub embeddings: Option<Vec<Vec<f32>>>,
+    /// Base64-encoded little-endian f32 flat array (binary format, more compact)
+    #[serde(default)]
+    pub embeddings_b64: Option<String>,
+    /// Shape [num_tokens, dim] — required when using embeddings_b64
+    #[serde(default)]
+    pub shape: Option<[usize; 2]>,
 }
 
 /// Request to add documents to an existing index.
@@ -163,11 +174,21 @@ pub struct AddDocumentsResponse {
 // =============================================================================
 
 /// Query embeddings for search.
+///
+/// Supports two formats:
+/// - JSON: provide `embeddings` as a nested array
+/// - Base64: provide `embeddings_b64` (base64-encoded little-endian f32) and `shape`
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct QueryEmbeddings {
-    /// Embedding matrix as nested array [num_tokens, dim]
-    #[schema(example = json!([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]))]
-    pub embeddings: Vec<Vec<f32>>,
+    /// Embedding matrix as nested array [num_tokens, dim] (JSON format)
+    #[serde(default)]
+    pub embeddings: Option<Vec<Vec<f32>>>,
+    /// Base64-encoded little-endian f32 flat array (binary format, more compact)
+    #[serde(default)]
+    pub embeddings_b64: Option<String>,
+    /// Shape [num_tokens, dim] — required when using embeddings_b64
+    #[serde(default)]
+    pub shape: Option<[usize; 2]>,
 }
 
 /// Request to search the index.
@@ -619,11 +640,23 @@ pub struct EncodeRequest {
 }
 
 /// Response containing embeddings for encoded texts.
+///
+/// Returns either JSON or base64 format depending on the `X-Embeddings-Format` request header.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct EncodeResponse {
-    /// Embeddings for each text: \[num_texts\]\[num_tokens\]\[embedding_dim\]
+    /// Embeddings for each text: \[num_texts\]\[num_tokens\]\[embedding_dim\] (JSON format)
+    /// Omitted when base64 format is requested.
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(example = json!([[[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]]))]
-    pub embeddings: Vec<Vec<Vec<f32>>>,
+    pub embeddings: Option<Vec<Vec<Vec<f32>>>>,
+    /// Base64-encoded embeddings (one per text, flat little-endian f32)
+    /// Only present when base64 format is requested.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub embeddings_b64: Option<Vec<String>>,
+    /// Shapes for each text's embeddings [num_tokens, dim]
+    /// Only present when base64 format is requested.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shapes: Option<Vec<[usize; 2]>>,
     /// Number of texts encoded
     #[schema(example = 2)]
     pub num_texts: usize,
@@ -689,9 +722,16 @@ pub struct UpdateWithEncodingRequest {
 /// with any document token, then sum these maximum similarities.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct RerankRequest {
-    /// Query embeddings [num_tokens, dim]
+    /// Query embeddings [num_tokens, dim] (JSON format)
+    #[serde(default)]
     #[schema(example = json!([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]))]
-    pub query: Vec<Vec<f32>>,
+    pub query: Option<Vec<Vec<f32>>>,
+    /// Base64-encoded little-endian f32 flat query array (binary format, more compact)
+    #[serde(default)]
+    pub query_b64: Option<String>,
+    /// Shape [num_tokens, dim] — required when using query_b64
+    #[serde(default)]
+    pub query_shape: Option<[usize; 2]>,
     /// List of document embeddings, each [num_tokens, dim]
     pub documents: Vec<DocumentEmbeddings>,
 }
@@ -738,6 +778,43 @@ pub struct RerankResponse {
     /// Number of documents reranked
     #[schema(example = 2)]
     pub num_documents: usize,
+}
+
+// =============================================================================
+// Base64 Encoding/Decoding Helpers
+// =============================================================================
+
+/// Decode base64-encoded little-endian f32 embeddings into a flat Vec with validated shape.
+pub fn decode_b64_embeddings(b64: &str, shape: [usize; 2]) -> Result<Vec<f32>, String> {
+    let bytes = STANDARD
+        .decode(b64)
+        .map_err(|e| format!("Invalid base64: {}", e))?;
+    let expected = shape[0] * shape[1] * 4;
+    if bytes.len() != expected {
+        return Err(format!(
+            "Expected {} bytes for shape {:?}, got {}",
+            expected,
+            shape,
+            bytes.len()
+        ));
+    }
+    let floats: Vec<f32> = bytes
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
+    Ok(floats)
+}
+
+/// Encode f32 embeddings as base64 little-endian.
+#[cfg(feature = "model")]
+pub fn encode_b64_embeddings(embeddings: &[Vec<f32>]) -> (String, [usize; 2]) {
+    let rows = embeddings.len();
+    let cols = if rows > 0 { embeddings[0].len() } else { 0 };
+    let bytes: Vec<u8> = embeddings
+        .iter()
+        .flat_map(|row| row.iter().flat_map(|f| f.to_le_bytes()))
+        .collect();
+    (STANDARD.encode(&bytes), [rows, cols])
 }
 
 // =============================================================================
