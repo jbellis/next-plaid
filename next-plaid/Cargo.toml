@@ -20,7 +20,7 @@ openblas-src = { version = "0.10", features = [
     "system",
 ], optional = true }
 accelerate-src = { version = "0.3", optional = true }
-intel-mkl-src = { version = "0.8", features = ["mkl-static-lp64-iomp"], optional = true }
+intel-mkl-src = { version = "0.8", features = ["mkl-static-lp64-seq"], optional = true }
 ndarray-rand = "0.15"
 rand = "0.8"
 rand_chacha = "0.3"
