@@ -96,8 +96,7 @@ fn bench_compress_into_codes(c: &mut Criterion) {
             let ev = embeddings.view();
             group.bench_with_input(BenchmarkId::new("cuda", &label), &(), |b, _| {
                 b.iter(|| {
-                    next_plaid::cuda::compress_into_codes_cuda_batched(ctx, &ev, &cv, None)
-                        .unwrap()
+                    next_plaid::cuda::compress_into_codes_cuda_batched(ctx, &ev, &cv, None).unwrap()
                 });
             });
         }
@@ -226,8 +225,13 @@ fn bench_index_creation(c: &mut Criterion) {
                 seed: Some(42),
                 ..Default::default()
             };
-            next_plaid::index::create_index_files(&docs, centroids.clone(), p.to_str().unwrap(), &cfg)
-                .unwrap()
+            next_plaid::index::create_index_files(
+                &docs,
+                centroids.clone(),
+                p.to_str().unwrap(),
+                &cfg,
+            )
+            .unwrap()
         });
     });
 
