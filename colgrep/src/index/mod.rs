@@ -944,7 +944,10 @@ impl IndexBuilder {
     /// Full rebuild (used when force=true or no index exists)
     fn full_rebuild(&mut self, languages: Option<&[Language]>) -> Result<UpdateStats> {
         #[cfg(feature = "cuda")]
-        if !crate::onnx_runtime::is_cudnn_available() {
+        if !crate::onnx_runtime::is_cudnn_available()
+            && std::env::var("_COLGREP_CUDNN_NOTICE").is_err()
+        {
+            std::env::set_var("_COLGREP_CUDNN_NOTICE", "1");
             eprintln!("📂 cuDNN not found, encoding will use CPU.");
         }
 
