@@ -39,3 +39,22 @@ pub use update::UpdateConfig;
 
 #[cfg(feature = "cuda")]
 pub use cuda::{clear_cuda_broken, is_cuda_broken, mark_cuda_broken, CudaContext};
+
+/// Check if GPU-only mode is forced via environment variable.
+/// Only checks the canonical `NEXT_PLAID_FORCE_GPU` env var.
+/// The higher-level `colgrep` crate's `apply_acceleration_mode()` propagates
+/// CLI flags and `COLGREP_*`/`FORCE_*` vars into this canonical var.
+pub fn is_force_gpu() -> bool {
+    std::env::var("NEXT_PLAID_FORCE_GPU")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// Check if CPU-only mode is forced via environment variable.
+/// Only checks the canonical `NEXT_PLAID_FORCE_CPU` env var.
+pub fn is_force_cpu() -> bool {
+    !is_force_gpu()
+        && std::env::var("NEXT_PLAID_FORCE_CPU")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+}
